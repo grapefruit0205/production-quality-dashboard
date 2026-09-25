@@ -1,0 +1,7 @@
+# clasp push 대상에서 제외 — 아래 4개만 Apps Script 로 올라감
+# (설치_한번에.js 는 Code.js + 대시보드.js + 설치.js 를 합친 붙여넣기용 사본이라 올리면 함수가 중복 정의됨)
+**/**
+!appsscript.json
+!Code.js
+!대시보드.js
+!설치.js
