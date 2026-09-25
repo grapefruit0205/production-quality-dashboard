@@ -74,7 +74,7 @@ class Range {
 }
 class Sheet {
   constructor(name, ss) {
-    this.name = name; this.ss = ss; this.grid = {}; this.maxRow = 0; this.maxCol = 0; this.frozenRows = 0; this.validations = {};
+    this.name = name; this.ss = ss; this.grid = {}; this.maxRow = 0; this.maxCol = 0; this.frozenRows = 0; this.validations = {}; this.rowHeights = {};
     this.charts = []; this.id = Math.floor(Math.random() * 1e9); this.cfRules = [];
   }
   getName() { return this.name; }
@@ -114,7 +114,8 @@ class Sheet {
   setFrozenRows(n) { this.frozenRows = n; }
   setFrozenColumns() {}
   setColumnWidth() {}
-  setRowHeight() {}
+  setRowHeight(r, h) { this.rowHeights[r] = h; }
+  setRowHeights(r, n, h) { for (let i = r; i < r + n; i++) this.rowHeights[i] = h; }
   setHiddenGridlines() {}
   setTabColor() {}
   setConditionalFormatRules(r) { this.cfRules = r; return this; }
@@ -193,6 +194,10 @@ class FakeFile {
     // ②에서 실제로 났던 제약: 시트 → xlsx 변환이 getAs 로는 막힌다(다운로드 URL 경로로 넘어가야 한다)
     if (m === 'excel' || m.indexOf('spreadsheetml') >= 0) {
       throw new Error('Converting from application/vnd.google-apps.spreadsheet to ' + m + ' is not supported.');
+    }
+    // PDF 도 계정에 따라 막힌다 — 회귀 테스트에서 스위치로 켠다(스텁 전역)
+    if (mime === 'application/pdf' && globalThis.__pdfGetAs거부) {
+      throw new Error('Converting from application/vnd.google-apps.spreadsheet to application/pdf is not supported.');
     }
     return { mime: m, name: this.name, setName(n) { this.name = n; return this; }, getName() { return this.name; } };
   }
@@ -314,6 +319,7 @@ const sandbox = {
   UrlFetchApp: {
     fetch: (url) => {
       if (String(url).indexOf('/export?format=') < 0) throw new Error('예상 밖 URL: ' + url);
+      내보내기URL들.push(String(url));
       const 형식 = String(url).split('format=')[1].split('&')[0];
       return {
         getResponseCode: () => 200,
@@ -338,6 +344,7 @@ console.log('로드 순서(최악): ' + 로드순서.join(' → ') + ' — 최�
 단언(vm.runInContext('typeof SH', sandbox) === 'object' && typeof sandbox.탭정의 === 'function', '파일 3개 로드 (최상위 교차 참조 없음)');
 
 /* ---------- 실행 도구 ---------- */
+const 내보내기URL들 = [];
 let 마지막로그 = '';
 function 실행(이름, fn) {
   process.stdout.write('\n========== ' + 이름 + ' ==========\n');
@@ -454,6 +461,14 @@ console.log('\n----- 리포트 (앞 14행) -----');
 const 리포트값 = 리포트.getDataRange().getValues();
 단언(리포트값.every((r) => r.every((x) => !(typeof x === 'string' && x.charAt(0) === '='))), '리포트는 수식 없이 값만');
 단언(리포트값.some((r) => r[0] === '4. 종합 코멘트') && 리포트값.some((r) => r[0] === '5. 조치 제안'), '리포트에 코멘트·조치 제안 있음');
+/* A4 세로 1장에 담기는지 — 2026-09-25 실제 환경에서 2장으로 갈라졌던 문제의 회귀 테스트 */
+const 리포트행수 = 리포트.getLastRow();
+const 높이지정 = Object.keys(리포트.rowHeights).map(Number).filter((r) => r >= 1 && r <= 리포트행수);
+const 리포트높이 = 높이지정.reduce((a, r) => a + 리포트.rowHeights[r], 0);
+단언(높이지정.length === 리포트행수, '리포트 ' + 리포트행수 + '행 전부 행 높이 지정(기본값 21px 로 남는 행 없음)');
+단언(리포트높이 > 0 && 리포트높이 < 978, '리포트 총 높이 ' + 리포트높이 + 'px < A4 1장 978px');
+단언(로그포함('A4 세로 1장'), '리포트 높이 로그 남김');
+
 
 /* ========== 6. 엑셀내보내기 ========== */
 const xlsx결과 = 실행('엑셀내보내기', () => sandbox.엑셀내보내기());
@@ -474,6 +489,16 @@ sandbox._설정쓰기('메일알림', 'test@example.invalid');
 실행('리포트_PDF (메일 알림 켬)', () => sandbox.리포트_PDF());
 단언(보낸메일.length === 1 && 보낸메일[0].to === 'test@example.invalid', '메일 1통 발송');
 sandbox._설정쓰기('메일알림', '');
+
+/* ========== 8-1. getAs 가 막힌 계정 → 다운로드 URL 경로 (PDF 옵션 확인) ========== */
+globalThis.__pdfGetAs거부 = true;
+실행('리포트_PDF (getAs 막힘 → 다운로드 URL 경로)', () => sandbox.리포트_PDF());
+globalThis.__pdfGetAs거부 = false;
+단언(로그포함('[건너뜀] getAs(pdf)') && 로그포함('pdf 변환: 다운로드 URL 경로 사용'), 'pdf 1단계 거부 → 2단계 자동 전환');
+const pdfURL = 내보내기URL들.filter((u) => u.indexOf('format=pdf') >= 0).pop() || '';
+단언(pdfURL.indexOf('fitw=true') >= 0 && pdfURL.indexOf('fith=true') >= 0 && pdfURL.indexOf('portrait=true') >= 0,
+  'PDF 내보내기 URL 에 가로·세로 맞춤 + A4 세로 옵션');
+단언(pdfURL.indexOf('top_margin=0.4') >= 0 && pdfURL.indexOf('bottom_margin=0.4') >= 0, 'PDF 여백 옵션(0.4인치)');
 
 /* ========== 9. 설치_확인 ========== */
 실행('설치_확인', () => sandbox.설치_확인());

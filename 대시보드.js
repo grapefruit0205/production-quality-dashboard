@@ -12,6 +12,9 @@
 
 /* ============================ 대시보드 ============================ */
 
+/** A4 세로 1장에 들어가는 대략의 높이(px). 96dpi · 여백 0.75인치 기준 — 이 파일 안에서만 쓴다 */
+const A4한장 = 978;
+
 /** 대시보드 카드·차트 배치 상수 (이 파일 안에서만 쓴다) */
 function _대시보드배치() {
   return {
@@ -385,7 +388,7 @@ function _리포트작성(ss) {
   넣기(['']);
 
   넣기(['5. 조치 제안'], '소제목');
-  _조치제안(집).forEach((s) => 넣기(['· ' + s], '긴글'));
+  _조치제안(집).forEach((s) => 넣기(['· ' + s], '조치'));
   넣기(['']);
   넣기(['', '', '', '', '', '담당', '검토', '승인'], '결재');
   넣기(['', '', '', '', '', '', '', ''], '서명');
@@ -393,6 +396,7 @@ function _리포트작성(ss) {
   // 쓰기 + 서식
   _재시도('리포트 쓰기', () => sh.getRange(1, 1, 줄.length, 열수).setValues(줄.map((x) => x[0])));
   const 긴글행 = [];
+  const 조치행 = [];
   줄.forEach((x, i) => {
     const r = i + 1;
     const 스타일 = x[1];
@@ -404,11 +408,23 @@ function _리포트작성(ss) {
     else if (스타일 === '머리') { 전체.setFontWeight('bold').setBackground('#1F3864').setFontColor('#FFFFFF').setHorizontalAlignment('center').setFontSize(9); }
     else if (스타일 === '표') { 전체.setFontSize(9).setHorizontalAlignment('right'); sh.getRange(r, 1, 1, 2).setHorizontalAlignment('left'); }
     else if (스타일 === '긴글') { _안전('병합', () => 전체.merge()); 전체.setWrap(true).setVerticalAlignment('top').setFontSize(9); 긴글행.push(r); }
+    else if (스타일 === '조치') { _안전('병합', () => 전체.merge()); 전체.setWrap(true).setVerticalAlignment('top').setFontSize(9); 조치행.push(r); }
     else if (스타일 === '결재') { sh.getRange(r, 6, 1, 3).setBackground('#F1F3F4').setFontColor('#666666').setHorizontalAlignment('center').setFontSize(9); }
-    else if (스타일 === '서명') { sh.getRange(r, 6, 1, 3).setBorder(true, true, true, true, true, false, '#999999', SpreadsheetApp.BorderStyle.SOLID); sh.setRowHeight(r, 44); }
+    else if (스타일 === '서명') { sh.getRange(r, 6, 1, 3).setBorder(true, true, true, true, true, false, '#999999', SpreadsheetApp.BorderStyle.SOLID); }
     else if (스타일 === '본문') { 전체.setFontSize(9); }
   });
-  긴글행.forEach((r) => sh.setRowHeight(r, 64));
+  // A4 세로 1장에 담기게 행 높이를 조인다 — 기본 21px 로 두면 47행이 1장을 넘겨
+// '5. 조치 제안' 제목만 앞장 끝에 남고 내용이 다음 장으로 밀린다(실제로 그랬다).
+  // 표·본문은 17px, 종합 코멘트(4줄) 60px, 조치 제안(1~2줄) 30px, 서명란 32px.
+  const 행높이 = { 본문: 17, 긴글: 60, 조치: 30, 서명: 32 };
+  _안전('행 높이', () => {
+    sh.setRowHeights(1, 줄.length, 행높이.본문);
+    긴글행.forEach((r) => sh.setRowHeight(r, 행높이.긴글));
+    조치행.forEach((r) => sh.setRowHeight(r, 행높이.조치));
+    sh.setRowHeight(줄.length, 행높이.서명);
+  });
+  const 예상높이 = (줄.length - 긴글행.length - 조치행.length - 1) * 행높이.본문 +
+    긴글행.length * 행높이.긴글 + 조치행.length * 행높이.조치 + 행높이.서명;
   // 핵심 지표 표: 판정 '초과'·'미달' 빨강 (같은 시트만 참조)
   _안전('리포트 조건부 서식', () => sh.setConditionalFormatRules([
     SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('초과').setFontColor('#c00000').setBold(true).setRanges([sh.getRange(1, 1, 줄.length, 열수)]).build(),
@@ -418,6 +434,7 @@ function _리포트작성(ss) {
   너비.forEach((w, i) => sh.setColumnWidth(i + 1, w));
   _안전('격자 숨김', () => sh.setHiddenGridlines(true));
   _로그('리포트: ' + 줄.length + '행 (핵심 지표 6 · 월별 ' + 월들.length + ' · 라인별 ' + 집.라인목록.length + ' · 조치 제안 ' + _조치제안(집).length + ')');
+  _로그('리포트: 예상 높이 약 ' + 예상높이 + 'px / A4 세로 1장 ' + A4한장 + 'px — 넘으면 PDF 가 2장으로 갈라집니다');
   return sh;
 }
 
@@ -480,7 +497,9 @@ function 리포트_PDF() {
 
     const 파일 = DriveApp.getFileById(임시ID);
     const pdf = _내보내기(파일, 'application/pdf', 'pdf',
-      'gid=' + 리포트.getSheetId() + '&portrait=true&fitw=true&size=A4&gridlines=false&printtitle=false&sheetnames=false');
+      // fitw(가로 맞춤)만으로는 세로가 넘쳐 2장이 됐다 → fith(세로 맞춤)까지 걸고 여백을 줄인다
+      'gid=' + 리포트.getSheetId() + '&portrait=true&fitw=true&fith=true&size=A4&gridlines=false&printtitle=false&sheetnames=false' +
+      '&top_margin=0.4&bottom_margin=0.4&left_margin=0.4&right_margin=0.4');
     if (pdf) {
       결과 = 출력.createFile(pdf.setName(이름 + '.pdf')).getUrl();
       _로그('PDF 저장: ' + 결과);
